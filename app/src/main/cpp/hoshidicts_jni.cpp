@@ -8,11 +8,13 @@
 
 namespace {
     struct LookupObject {
-        DictionaryQuery query;
+        std::unique_ptr<DictionaryQuery> query;
         Deinflector deconjugator;
         std::unique_ptr<Lookup> lookup;
 
-        LookupObject() : lookup(std::make_unique<Lookup>(query, deconjugator)) {}
+        LookupObject()
+            : query(std::make_unique<DictionaryQuery>()),
+              lookup(std::make_unique<Lookup>(*query, deconjugator)) {}
     };
 
     LookupObject *as_object(jlong handle) { return reinterpret_cast<LookupObject *>(handle); }
@@ -250,14 +252,16 @@ Java_de_manhhao_hoshi_HoshiDicts_rebuildQuery(JNIEnv *env, jobject, jlong sessio
                                               jobjectArray term_paths, jobjectArray freq_paths,
                                               jobjectArray pitch_paths) {
     LookupObject *obj = as_object(session);
-    obj->query = DictionaryQuery{};
+    auto query = std::make_unique<DictionaryQuery>();
     for_each_string(env, term_paths,
-                    [&](const std::string &path) { obj->query.add_term_dict(path); });
+                    [&](const std::string &path) { query->add_term_dict(path); });
     for_each_string(env, freq_paths,
-                    [&](const std::string &path) { obj->query.add_freq_dict(path); });
+                    [&](const std::string &path) { query->add_freq_dict(path); });
     for_each_string(env, pitch_paths,
-                    [&](const std::string &path) { obj->query.add_pitch_dict(path); });
-    obj->lookup = std::make_unique<Lookup>(obj->query, obj->deconjugator);
+                    [&](const std::string &path) { query->add_pitch_dict(path); });
+    obj->lookup.reset();
+    obj->query = std::move(query);
+    obj->lookup = std::make_unique<Lookup>(*obj->query, obj->deconjugator);
 }
 
 extern "C" JNIEXPORT jobject JNICALL
@@ -273,17 +277,18 @@ Java_de_manhhao_hoshi_HoshiDicts_importDictionary(JNIEnv *env, jobject, jstring 
 
 extern "C" JNIEXPORT jobjectArray JNICALL
 Java_de_manhhao_hoshi_HoshiDicts_lookup(JNIEnv *env, jobject, jlong session, jstring text,
-                                        jint max_results) {
+                                        jint max_results, jint scan_length) {
     LookupObject *obj = as_object(session);
     auto text_str = jstring_to_std_string(env, text);
-    auto result = obj->lookup->lookup(text_str, static_cast<int>(max_results));
+    auto result = obj->lookup->lookup(text_str, static_cast<int>(max_results),
+                                      static_cast<size_t>(scan_length));
     return new_lookup_result_array(env, result);
 }
 
 extern "C" JNIEXPORT jobjectArray JNICALL
 Java_de_manhhao_hoshi_HoshiDicts_getStyles(JNIEnv *env, jobject, jlong session) {
     LookupObject *obj = as_object(session);
-    auto styles = obj->query.get_styles();
+    auto styles = obj->query->get_styles();
     return new_dictionary_style_array(env, styles);
 }
 
@@ -293,7 +298,7 @@ Java_de_manhhao_hoshi_HoshiDicts_getMediaFile(JNIEnv *env, jobject, jlong sessio
     LookupObject *obj = as_object(session);
     auto dict_name_str = jstring_to_std_string(env, dict_name);
     auto media_path_str = jstring_to_std_string(env, media_path);
-    auto data = obj->query.get_media_file(dict_name_str, media_path_str);
+    auto data = obj->query->get_media_file(dict_name_str, media_path_str);
     if (data.empty()) {
         return nullptr;
     }
