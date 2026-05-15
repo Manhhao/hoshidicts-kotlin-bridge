@@ -9,12 +9,12 @@
 namespace {
     struct LookupObject {
         std::unique_ptr<DictionaryQuery> query;
-        Deinflector deconjugator;
+        Deinflector deinflector;
         std::unique_ptr<Lookup> lookup;
 
         LookupObject()
             : query(std::make_unique<DictionaryQuery>()),
-              lookup(std::make_unique<Lookup>(*query, deconjugator)) {}
+              lookup(std::make_unique<Lookup>(*query, deinflector)) {}
     };
 
     LookupObject *as_object(jlong handle) { return reinterpret_cast<LookupObject *>(handle); }
@@ -40,20 +40,35 @@ namespace {
         return env->NewStringUTF(value.c_str());
     }
 
-    jobject new_import_result(JNIEnv *env, bool success, jlong term_count, jlong meta_count,
-                              jlong media_count) {
+    jobject new_import_result(JNIEnv *env, bool success, const std::string &title,
+                              jlong term_count, jlong meta_count, jlong freq_count,
+                              jlong pitch_count, jlong media_count) {
         jclass cls = env->FindClass("de/manhhao/hoshi/ImportResult");
-        jmethodID ctor = env->GetMethodID(cls, "<init>", "(ZJJJ)V");
-        return env->NewObject(cls, ctor, static_cast<jboolean>(success), term_count, meta_count,
-                              media_count);
+        jmethodID ctor = env->GetMethodID(cls, "<init>", "(ZLjava/lang/String;JJJJJ)V");
+        jstring jtitle = new_string(env, title);
+        jobject out = env->NewObject(cls, ctor, static_cast<jboolean>(success), jtitle,
+                                     term_count, meta_count, freq_count, pitch_count, media_count);
+        env->DeleteLocalRef(jtitle);
+        return out;
+    }
+
+    jobject new_transform_group(JNIEnv *env, const TransformGroup &step) {
+        jclass cls = env->FindClass("de/manhhao/hoshi/TransformGroup");
+        jmethodID ctor = env->GetMethodID(cls, "<init>", "(Ljava/lang/String;Ljava/lang/String;)V");
+        jstring name = new_string(env, step.name);
+        jstring description = new_string(env, step.description);
+        jobject out = env->NewObject(cls, ctor, name, description);
+        env->DeleteLocalRef(name);
+        env->DeleteLocalRef(description);
+        return out;
     }
 
     jobjectArray
-    new_process_array(JNIEnv *env, const std::vector<std::string> &process) {
-        jclass cls = env->FindClass("java/lang/String");
-        jobjectArray array = env->NewObjectArray(static_cast<jsize>(process.size()), cls, nullptr);
-        for (size_t i = 0; i < process.size(); ++i) {
-            jobject item = new_string(env, process[i]);
+    new_process_array(JNIEnv *env, const std::vector<TransformGroup> &trace) {
+        jclass cls = env->FindClass("de/manhhao/hoshi/TransformGroup");
+        jobjectArray array = env->NewObjectArray(static_cast<jsize>(trace.size()), cls, nullptr);
+        for (size_t i = 0; i < trace.size(); ++i) {
+            jobject item = new_transform_group(env, trace[i]);
             env->SetObjectArrayElement(array, static_cast<jsize>(i), item);
             env->DeleteLocalRef(item);
         }
@@ -183,15 +198,10 @@ namespace {
     jobject new_lookup_result(JNIEnv *env, const LookupResult &result) {
         jclass cls = env->FindClass("de/manhhao/hoshi/LookupResult");
         jmethodID ctor = env->GetMethodID(cls, "<init>",
-                                          "(Ljava/lang/String;Ljava/lang/String;[Ljava/lang/String;Lde/manhhao/hoshi/TermResult;I)V");
+                                          "(Ljava/lang/String;Ljava/lang/String;[Lde/manhhao/hoshi/TransformGroup;Lde/manhhao/hoshi/TermResult;I)V");
         jstring matched = new_string(env, result.matched);
         jstring deinflected = new_string(env, result.deinflected);
-        std::vector<std::string> process_items;
-        process_items.reserve(result.trace.size());
-        for (const auto &step: result.trace) {
-            process_items.push_back(step.name);
-        }
-        jobjectArray process = new_process_array(env, process_items);
+        jobjectArray process = new_process_array(env, result.trace);
         jobject term = new_term_result(env, result.term);
         jobject out = env->NewObject(cls, ctor, matched, deinflected, process, term,
                                      static_cast<jint>(result.preprocessor_steps));
@@ -261,7 +271,7 @@ Java_de_manhhao_hoshi_HoshiDicts_rebuildQuery(JNIEnv *env, jobject, jlong sessio
                     [&](const std::string &path) { query->add_pitch_dict(path); });
     obj->lookup.reset();
     obj->query = std::move(query);
-    obj->lookup = std::make_unique<Lookup>(*obj->query, obj->deconjugator);
+    obj->lookup = std::make_unique<Lookup>(*obj->query, obj->deinflector);
 }
 
 extern "C" JNIEXPORT jobject JNICALL
@@ -270,8 +280,11 @@ Java_de_manhhao_hoshi_HoshiDicts_importDictionary(JNIEnv *env, jobject, jstring 
     auto zip_path_str = jstring_to_std_string(env, zip_path);
     auto output_dir_str = jstring_to_std_string(env, output_dir);
     const auto result = dictionary_importer::import(zip_path_str, output_dir_str, true);
-    return new_import_result(env, result.success, static_cast<jlong>(result.term_count),
+    return new_import_result(env, result.success, result.title,
+                             static_cast<jlong>(result.term_count),
                              static_cast<jlong>(result.meta_count),
+                             static_cast<jlong>(result.freq_count),
+                             static_cast<jlong>(result.pitch_count),
                              static_cast<jlong>(result.media_count));
 }
 
